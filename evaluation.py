@@ -4,96 +4,78 @@ import vtk
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 import SimpleITK as sitk
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
-from utils import *
+sys.path.append(os.path.join(os.path.dirname(__file__), "vtk_utils"))
+from vtk_utils import *
 import csv
+from metrics import *
+import argparse
+import glob
 
+def natural_sort(l):
+    import re
+    convert = lambda text: int(text) if text.isdigit() else text.lower()
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ]
+    return sorted(l, key = alphanum_key)
 
-def write_scores(csv_path,scores): 
+def write_scores(csv_path,scores, header=('Dice', 'ASSD')): 
     with open(csv_path, 'w') as writeFile:
         writer = csv.writer(writeFile)
-        writer.writerow(('Dice', 'ASSD'))
+        writer.writerow(header)
         for i in range(len(scores)):
             writer.writerow(tuple(scores[i]))
             print(scores[i])
     writeFile.close()
 
-def extract_surface(poly):
-    connectivity = vtk.vtkPolyDataConnectivityFilter()
-    connectivity.SetInputData(poly)
-    connectivity.ColorRegionsOn()
-    connectivity.SetExtractionModeToAllRegions()
-    connectivity.Update()
-    poly = connectivity.GetOutput()
-    return poly
-
-def surface_distance(p_surf, g_surf):
-    dist_fltr = vtk.vtkDistancePolyDataFilter()
-    dist_fltr.SetInputData(1, p_surf)
-    dist_fltr.SetInputData(0, g_surf)
-    dist_fltr.SignedDistanceOff()
-    dist_fltr.Update()
-    distance = vtk_to_numpy(dist_fltr.GetOutput().GetPointData().GetArray('Distance'))
-    return distance, dist_fltr.GetOutput()
-
-
-def evaluate_poly(poly, gt, NUM):
-    # compute assd and hausdorff distances
-    assd_list, haus_list, poly_list = [], [], []
-    poly =extract_surface(poly)
-    for i in range(NUM):
-        poly_i = thresholdPolyData(poly, 'Scalars_', (i+1, i+1),'cell')
-        if poly_i.GetNumberOfPoints() == 0:
-            print("Mesh based methods.")
-            poly_i = thresholdPolyData(poly, 'RegionId', (i, i), 'point')
-        gt_i = thresholdPolyData(gt, 'Scalars_', (i+1, i+1),'cell')
-        pred2gt_dist, pred2gt = surface_distance(gt_i, poly_i)
-        gt2pred_dist, gt2pred = surface_distance(poly_i, gt_i)
-        assd = (np.mean(pred2gt_dist)+np.mean(gt2pred_dist))/2
-        haus = max(np.max(pred2gt_dist), np.max(gt2pred_dist))
-        assd_list.append(assd)
-        haus_list.append(haus)
-        poly_list.append(pred2gt)
-
-    poly_dist = appendPolyData(poly_list)
-    # whole heart
-    pred2gt_dist, pred2gt = surface_distance(gt, poly)
-    gt2pred_dist, gt2pred = surface_distance(poly, gt)
-
-    assd = (np.mean(pred2gt_dist)+np.mean(gt2pred_dist))/2
-    haus = max(np.max(pred2gt_dist), np.max(gt2pred_dist))
-
-    assd_list.append(assd)
-    haus_list.append(haus)
-    print(assd_list)
-    print(haus_list)
-    return assd_list, haus_list, poly_dist
-
-def evaluate(pred_dir, pred_pat, gt_dir, gt_pat, out_name, num_region=7):
-    pred_fns = natural_sort(glob.glob(os.path.join(pred_dir, pred_pat)))
-    gt_fns = natural_sort(glob.glob(os.path.join(gt_dir, gt_pat)))
+def evaluate_surfaces(pred_pat, gt_pat, out_name, num_region=7):
+    pred_fns = natural_sort(glob.glob(pred_pat))
+    pred_dir = os.path.dirname(pred_pat)
+    gt_fns = natural_sort(glob.glob(gt_pat))
+    assert len(pred_fns) == len(gt_fns), 'Unequal number of files between prediction and ground truth!'
 
     assd_list, haus_list = [], []
     for pred_fn, gt_fn in zip(pred_fns, gt_fns):
         pred_poly = load_vtk_mesh(pred_fn)
         gt_poly = load_vtk_mesh(gt_fn)
-        assd, haus, poly_dist = evaluate_poly(pred_poly, gt_poly, num_region)
+        assd, haus, poly_dist = evaluate_poly_distances(pred_poly, gt_poly, num_region)
         assd_list.append(assd)
         haus_list.append(haus)
         write_vtk_polydata(poly_dist, os.path.join(pred_dir, 'dist_'+out_name+os.path.basename(pred_fn)))
 
-    assd_path = os.path.join(pred_dir, out_name+'assd.csv')
-    haus_path = os.path.join(pred_dir, out_name+'haus.csv')
+    assd_path = os.path.join(pred_dir, out_name+'_assd.csv')
+    haus_path = os.path.join(pred_dir, out_name+'_haus.csv')
 
     write_scores(assd_path, assd_list)
     write_scores(haus_path, haus_list)
 
-if __name__ == '__main__':
-    num_region = 7
-    gt_dir = 'examples/gt'
+def evaluate_segmentations(pred_pat, gt_pat, out_name):
+    pred_fns = natural_sort(glob.glob(pred_pat))
+    pred_dir = os.path.dirname(pred_pat)
+    gt_fns = natural_sort(glob.glob(gt_pat))
+    assert len(pred_fns) == len(gt_fns), 'Unequal number of files between prediction and ground truth!'
+    dice_list, jaccard_list = [], []
+    for pred_fn, gt_fn in zip(pred_fns, gt_fns):
+        pred_im = sitk.ReadImage(pred_fn)
+        pred_im_vtk, _ = exportSitk2VTK(pred_im)
+        gt_im = sitk.ReadImage(gt_fn)
+        gt_im_vtk, _ = exportSitk2VTK(gt_im)
+        dice, jac = evaluate_segmentation_accuracy(pred_im_vtk, gt_im_vtk)
+        dice_list.append(dice)
+        jaccard_list.append(jac)
+    dice_path = os.path.join(pred_dir, out_name+'_dice.csv')
+    jac_path = os.path.join(pred_dir, out_name+'_jaccard.csv')
+    write_scores(dice_path, dice_list)
+    write_scores(jac_path, jaccard_list)
 
-    pred_dir = 'examples/pred'
-    out_name = 'mr_'
-    pred_pat = 'block2_mr*.vtp'
-    gt_pat = 'mr_*.vtp'
-    evaluate(pred_dir, pred_pat, gt_dir, gt_pat, out_name, num_region)
+if __name__ == '__main__':
+    #gt_pat = 'examples/gt/mr_*.vtp'
+    #pred_pat = 'examples/pred/block2_mr*.vtp'
+    #out_name = 'mr_'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--gt_pattern', help='File pattern of ground truth files')
+    parser.add_argument('--pred_pattern', help='File pattern of prediction files')
+    parser.add_argument('--output_name', help='Output name, ct or mr')
+    args = parser.parse_args()
+    print("debug: ", args.pred_pattern)
+    #evaluate_surfaces(args.pred_pattern, args.gt_pattern, args.output_name)
+    evaluate_segmentations(args.pred_pattern, args.gt_pattern, args.output_name)
+

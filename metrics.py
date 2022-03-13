@@ -37,6 +37,7 @@ def evaluate_poly_distances(poly, gt, NUM):
             print("Mesh based methods.")
             poly_i = thresholdPolyData(poly, 'RegionId', (i, i), 'point')
         gt_i = thresholdPolyData(gt, 'Scalars_', (i+1, i+1),'cell')
+        print("DEBUG: ", poly_i.GetNumberOfPoints(), gt_i.GetNumberOfPoints())
         pred2gt_dist, pred2gt = surface_distance(gt_i, poly_i)
         gt2pred_dist, gt2pred = surface_distance(poly_i, gt_i)
         assd = (np.mean(pred2gt_dist)+np.mean(gt2pred_dist))/2

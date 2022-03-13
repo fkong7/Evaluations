@@ -26,6 +26,32 @@ def write_scores(csv_path,scores, header=('Dice', 'ASSD')):
             print(scores[i])
     writeFile.close()
 
+def convert_to_surfs(fn):
+    seg = sitk.ReadImage(fn)
+    py_seg = sitk.GetArrayFromImage(seg)
+    py_seg = eraseBoundary(py_seg, 1, 0)
+    labels = np.unique(py_seg)
+    for i, l in enumerate(labels):
+        py_seg[py_seg==l] = i
+    seg2 = sitk.GetImageFromArray(py_seg)
+    seg2.SetOrigin(seg.GetOrigin())
+    seg2.SetSpacing(seg.GetSpacing())
+    seg2.SetDirection(seg.GetDirection())
+    seg_vtk,_ = exportSitk2VTK(seg2)
+    new_spacing = [1.5,1.5,1.5]
+    seg_vtk = vtkImageResample(seg_vtk,new_spacing,'NN')
+    poly_l = []
+    for i, _ in enumerate(labels):
+        if i==0:
+            continue
+        p = vtk_marching_cube(seg_vtk, 0, i)
+        poly_l.append(p)
+    poly = appendPolyData(poly_l)
+    ids = poly.GetCellData().GetArray(0)
+    ids.SetName('Scalars_')
+    poly.GetCellData().AddArray(ids)
+    return poly
+
 def evaluate_surfaces(pred_pat, gt_pat, out_name, num_region=7):
     pred_fns = natural_sort(glob.glob(pred_pat))
     pred_dir = os.path.dirname(pred_pat)
@@ -34,12 +60,17 @@ def evaluate_surfaces(pred_pat, gt_pat, out_name, num_region=7):
 
     assd_list, haus_list = [], []
     for pred_fn, gt_fn in zip(pred_fns, gt_fns):
-        pred_poly = load_vtk_mesh(pred_fn)
-        gt_poly = load_vtk_mesh(gt_fn)
+        try:
+            pred_poly = load_vtk_mesh(pred_fn)
+            gt_poly = load_vtk_mesh(gt_fn)
+        except:
+            pred_poly = convert_to_surfs(pred_fn)
+            gt_poly = convert_to_surfs(gt_fn)
+            #write_vtk_polydata(pred_poly, '/Users/fanweikong/Downloads/debug.vtp')
         assd, haus, poly_dist = evaluate_poly_distances(pred_poly, gt_poly, num_region)
         assd_list.append(assd)
         haus_list.append(haus)
-        write_vtk_polydata(poly_dist, os.path.join(pred_dir, 'dist_'+out_name+os.path.basename(pred_fn)))
+        #write_vtk_polydata(poly_dist, os.path.join(pred_dir, 'dist_'+out_name+os.path.basename(pred_fn)))
 
     assd_path = os.path.join(pred_dir, out_name+'_assd.csv')
     haus_path = os.path.join(pred_dir, out_name+'_haus.csv')
@@ -51,9 +82,11 @@ def evaluate_segmentations(pred_pat, gt_pat, out_name):
     pred_fns = natural_sort(glob.glob(pred_pat))
     pred_dir = os.path.dirname(pred_pat)
     gt_fns = natural_sort(glob.glob(gt_pat))
+    print("pred, gt: ", len(pred_fns), len(gt_fns))
     assert len(pred_fns) == len(gt_fns), 'Unequal number of files between prediction and ground truth!'
     dice_list, jaccard_list = [], []
     for pred_fn, gt_fn in zip(pred_fns, gt_fns):
+        print(pred_fn, gt_fn)
         pred_im = sitk.ReadImage(pred_fn)
         pred_im_vtk, _ = exportSitk2VTK(pred_im)
         gt_im = sitk.ReadImage(gt_fn)
@@ -61,8 +94,8 @@ def evaluate_segmentations(pred_pat, gt_pat, out_name):
         dice, jac = evaluate_segmentation_accuracy(pred_im_vtk, gt_im_vtk)
         dice_list.append(dice)
         jaccard_list.append(jac)
-    dice_path = os.path.join(pred_dir, out_name+'_dice.csv')
-    jac_path = os.path.join(pred_dir, out_name+'_jaccard.csv')
+    dice_path = os.path.join(pred_dir, out_name+'test.csv')
+    jac_path = os.path.join(pred_dir, out_name+'test_jaccard.csv')
     write_scores(dice_path, dice_list)
     write_scores(jac_path, jaccard_list)
 
